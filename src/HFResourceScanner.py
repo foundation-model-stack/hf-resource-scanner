@@ -15,6 +15,9 @@ class HFResourceScanner(TrainerCallback):
         if state.global_step != self.target_step - 1:
             return
 
+        # run only for the target step
+
+        ## setup optimizer hook to calc grad
         def optim_track_gradmem(optimizer, *args, **kwargs):
             gradmem = 0
             for lay in optimizer.state.items():
@@ -23,8 +26,13 @@ class HFResourceScanner(TrainerCallback):
                     gradmem += ps.grad.nelement() * ps.grad.element_size()
             self.data["gradients"] = gradmem
 
-        # run only for the target step
         self.optim_hook_handle = optimizer.register_step_pre_hook(optim_track_gradmem)
+
+        ## setup model fwd hook to calc activations
+        def model_track_activations(model, args, output):
+            self.data["activation"] = torch.cuda.memory_allocated()
+
+        self.model_fwd_hook_handle = model.register_forward_hook(model_track_activations)
 
     def on_step_end(self, args, state, control, model, tokenizer, optimizer, **kwargs):
         # only calculate for master process in fsdp, other GPUs will be symmetrical
@@ -52,6 +60,10 @@ class HFResourceScanner(TrainerCallback):
         # it will happen in the optimizer step hook
         # now, deregister that hook
         self.optim_hook_handle.remove()
+        # similary for activations
+        self.model_fwd_hook_handle.remove()
+        # update activation value to remove out the model params + optimizer
+        self.data["activation"] -= self.data["model"] + self.data["optimizer"]
 
         # register to external metadata store like aim here
 
