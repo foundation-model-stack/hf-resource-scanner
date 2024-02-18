@@ -1,5 +1,6 @@
 import torch
 from transformers.trainer_callback import TrainerCallback
+import accelerate
 
 class HFResourceScanner(TrainerCallback):
     def __init__(self):
@@ -18,6 +19,11 @@ class HFResourceScanner(TrainerCallback):
         # run only for the target step
 
         ## setup optimizer hook to calc grad
+
+        # in case we use accelerate, the real optimizer is one step removed
+        if isinstance(optimizer, accelerate.optimizer.AcceleratedOptimizer):
+            optimizer = optimizer.optimizer
+
         def optim_track_gradmem(optimizer, *args, **kwargs):
             gradmem = 0
             for lay in optimizer.state.items():
