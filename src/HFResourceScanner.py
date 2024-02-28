@@ -1,10 +1,12 @@
 import torch
 from transformers.trainer_callback import TrainerCallback
 import accelerate
+import peft
 
 class HFResourceScanner(TrainerCallback):
     def __init__(self):
         self.data = {}
+        self.metadata = {}
         self.target_step = 5
 
     def on_step_begin(self, args, state, control, model, tokenizer, optimizer, **kwargs):
@@ -54,6 +56,9 @@ class HFResourceScanner(TrainerCallback):
         self.data["cuda_max_mem"] = torch.cuda.max_memory_allocated()
         self.data["model"] = model.get_memory_footprint()
 
+        if isinstance(model, peft.PeftModel):
+            self.metadata["peft_trainable_params"] = model.get_nb_trainable_parameters()
+
         optimizer_mem = 0
         for lay in optimizer.state.items():
             lstate = lay[1]
@@ -79,3 +84,4 @@ class HFResourceScanner(TrainerCallback):
             self.data[k] = fmt_size(v)
 
         print(self.data)
+        print(self.metadata)
