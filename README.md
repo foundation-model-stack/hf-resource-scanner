@@ -4,6 +4,12 @@ Scan resources consumed during training using HFTrainer and break up consumption
 
 Works for all training approaches (such as full-fine tuning, Prompt Tuning, LORA) for HFTrainer and other trainers based on it, such as SFTTrainer. Limited support for FSDP (currently).
 
+Measures and reports GPU memory consumption broken up into 4 categories:
+1. Model paramters
+2. Optimizer
+3. Gradients
+4. Activations
+
 ## Install
 
 ```
@@ -28,13 +34,11 @@ callbacks.append(Scanner())
 
 In the default configuration, prints out data to stdout.
 
-## Features
+## Configuring
 
-Measures and reports GPU memory consumption broken up into 4 categories:
-1. Model paramters
-2. Optimizer
-3. Gradients
-4. Activations
+You can further configure the Scanner to:
+1. Choose the step to instrument and scan at (we only scan at a single step). There is no reason to change from the default of 5.
+2. Output to stdout (the default), file or use a callback function to deal with the output. See examples provided in the `examples/` folder.
 
 ## Methodology
 
