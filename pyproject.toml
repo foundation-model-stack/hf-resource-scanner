@@ -12,6 +12,15 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+dependencies = [
+    "torch",
+    "transformers",
+    "accelerate",
+    "peft"
+]
+
+[tool.setuptools]
+packages = ["HFResourceScanner"]
 
 [project.urls]
 Homepage = "https://github.com/pypa/sampleproject"
