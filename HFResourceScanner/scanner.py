@@ -3,7 +3,7 @@ from transformers.trainer_callback import TrainerCallback
 import accelerate
 import peft
 
-class HFResourceScanner(TrainerCallback):
+class Scanner(TrainerCallback):
     def __init__(self):
         self.data = {}
         self.metadata = {}
