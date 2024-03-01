@@ -2,7 +2,7 @@
 
 Scan resources consumed during training using HFTrainer and break up consumption by category with **ZERO** overheads.
 
-Works for all training approaches (such as full-fine tuning, Prompt Tuning, LORA) for HFTrainer and other trainers based on it, such as SFTTrainer.
+Works for all training approaches (such as full-fine tuning, Prompt Tuning, LORA) for HFTrainer and other trainers based on it, such as SFTTrainer. Limited support for FSDP (currently).
 
 ## Install
 
@@ -44,6 +44,11 @@ Uses a combination of the following items:
 2. Pytorch hook functions such as `nn.Module` Forward and `optimizer.step` function to measure memory at ideal locations.
 
 ![Memory breakup](./imgs/memory.png)
+
+It is important to note that this scanning happens for a single step:
+1. At step start, setup hook functions.
+2. During the step, run the functions to take single point measurements.
+3. At the end of the step, correlate the data and cleaup the hook functions.
 
 ## Alternatives
 

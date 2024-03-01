@@ -14,7 +14,7 @@ trainer = SFTTrainer(
     dataset_text_field="text",
     max_seq_length=512,
     args=TrainingArguments(output_dir="tmp_trainer", max_steps=5),
-    callbacks=[Scanner()]
+    callbacks=[Scanner("haha")]
 )
 
 trainer.train()

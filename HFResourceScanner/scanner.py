@@ -3,11 +3,43 @@ from transformers.trainer_callback import TrainerCallback
 import accelerate
 import peft
 
+import logging
+logger = logging.getLogger(__name__)
+
+TARGET_STEP = 5
+
 class Scanner(TrainerCallback):
-    def __init__(self):
+    """Scan category-wise resource consumption during training.
+
+    Attributes:
+    -----------
+    target_step: int
+        Scanning is done during a single step of training.
+    """
+    def __init__(self, target_step: int = TARGET_STEP):
+        """Construct a Scanner.
+
+        Params:
+        -------
+        target_step:
+          the step number during which to scan. Defaults to 5, if not specified.
+          *Important: if this number is larger than the total number of steps,
+          the scanner will never fire.*
+        """
         self.data = {}
         self.metadata = {}
-        self.target_step = 5
+
+        if not isinstance(target_step, int):
+            logger.warning("Non integer target_step requested: switching to default value instead!")
+            target_step = TARGET_STEP
+
+        if target_step < 0:
+            logger.warning("Negative target_step: switching to default instead!")
+            target_step = TARGET_STEP
+        elif target_step <= 3:
+            logger.warning("Initial steps are prone to be unstable. A target_step higher than 3 is recommended.")
+
+        self.target_step = target_step
 
     def on_step_begin(self, args, state, control, model, tokenizer, optimizer, **kwargs):
         # only calculate for master process in fsdp, other GPUs will be symmetrical
@@ -83,5 +115,6 @@ class Scanner(TrainerCallback):
         for k, v in self.data.items():
             self.data[k] = fmt_size(v)
 
-        print(self.data)
-        print(self.metadata)
+        print("ResourceScanner: ", self.data)
+        if self.metadata:
+            print("ResourceScanner metadata:", self.metadata)
