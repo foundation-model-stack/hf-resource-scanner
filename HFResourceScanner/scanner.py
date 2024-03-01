@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 import sys
 import os
+from inspect import getfullargspec
 
 TARGET_STEP = 5
 
@@ -34,6 +35,8 @@ class Scanner(TrainerCallback):
           - Unspecified (the default): will write to stdout.
           - String: will write in plain text format to a file of given name
           - <filename>.json: will write to file in JSON format
+          - Function which takes in 2 arguments:
+              will call back the provided function with the data and metadata dict
         """
         self.data = {}
         self.metadata = {}
@@ -163,6 +166,17 @@ class Scanner(TrainerCallback):
                 self.write_plain()
             finally:
                 return
+
+        # callback function
+        if callable(self.output_fmt):
+            try:
+                if len(getfullargspec(self.output_fmt).args) == 2:
+                    self.output_fmt(self.data, self.metadata)
+                    return
+            except:
+                logger.error("Problem in inspecting callback function.")
+                logger.info("Switching to stdout instead.")
+                self.write_plain()
 
         logger.warning(f"Unrecognized output format requested: {self.output_fmt}")
         logger.info("Switching to default.")
