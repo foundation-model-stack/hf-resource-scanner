@@ -1,6 +1,6 @@
 # HFResourceScanner
 
-Scan resources consumed during training using HFTrainer and break up consumption by category with **ZERO** overheads.
+Scan resources consumed during training using HFTrainer and break up consumption by category with **almost ZERO** overheads.
 
 Works for all training approaches (such as full-fine tuning, Prompt Tuning, LORA) for HFTrainer and other trainers based on it, such as SFTTrainer. Limited support for FSDP (currently).
 
@@ -56,5 +56,4 @@ It is important to note that this scanning happens for a single step:
 
 ## Alternatives
 
-1. Pytorch Profile: *very* heavy weight, can slow down severely for larger models. In comparison, our approach is the most minimalistic approach possible and scales to any model type and size.
-
+1. Pytorch Profile: can give a complete breakup of stack traces and [memory consumption](https://pytorch.org/blog/understanding-gpu-memory-1/). While this is much more exhaustive and useful for optimizing implementations, this may be overwhelming for casual users. Also, this approach can take non-trivial amount of time to compute memory allocations and is quite slow for larger models.
