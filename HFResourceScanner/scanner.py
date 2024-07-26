@@ -11,6 +11,8 @@ import os
 from inspect import getfullargspec
 
 import time
+import torch.nn as nn
+from transformers import PreTrainedModel 
 
 TARGET_STEP = 5
 
@@ -271,3 +273,64 @@ class Scanner(TrainerCallback):
         logger.warning(f"Unrecognized output format requested: {self.output_fmt}")
         logger.info("Switching to default.")
         self.write_plain()
+
+
+
+
+
+
+
+
+"""CONFIGURATION DETECTOR"""
+
+# class Config_Detector(): 
+
+#     def __init__(self):
+#         self.model_handle=None
+#         self.step=0
+
+""""
+Doesnt work if done using a class because: when called in the trainer script an instnce of this class is created and that disrupts attaching hooks.
+(Hooks not attached to the original objects in the trainer script. Instead it is probably attached to the instance of the objects created.)
+"""
+
+global model_handle, step
+model_handle=None
+step=0
+
+def modelhook(objs_dict):
+    global model_handle
+
+    model=None
+
+    for _, obj in objs_dict:
+        if isinstance(obj,PreTrainedModel):
+            model=obj
+
+        elif isinstance(obj, nn.Module) and len([x for x in obj.children()])!=0: 
+            model=obj
+
+        elif isinstance(obj, type) and issubclass(obj, nn.Module):
+            model=obj
+
+
+    if model==None:
+        print("No Model Object Found")
+        return
+    
+    model.register_forward_hook(fwd_steps_hook_func) 
+
+    model_handle=model.register_forward_hook(model_hook_func)
+
+
+def fwd_steps_hook_func(module,input,output):
+    global step
+    step=step+1
+
+def model_hook_func(module, input,output):
+    if step == 3:
+    
+        total_params = sum(p.numel() for p in module.parameters() if p.requires_grad)
+        print(f'\n\n{module.__class__.__name__} has {total_params} parameters')
+        print(f'\n{module.__class__.__name__} parameters dtype: {next(module.parameters()).dtype}\n')
+        model_handle.remove()

@@ -3,7 +3,7 @@ from datasets import load_dataset
 from trl import SFTTrainer
 
 from aim.hugging_face import AimCallback
-from HFResourceScanner import Scanner
+from HFResourceScanner import scanner
 
 aim_callback = AimCallback(repo="/data/aim", experiment="cg-reg-extra")
 def write_data(data, metadata):
@@ -19,7 +19,9 @@ trainer = SFTTrainer(
     dataset_text_field="text",
     max_seq_length=512,
     args=TrainingArguments(output_dir="tmp_trainer", max_steps=5),
-    callbacks=[aim_callback, Scanner(output_fmt=write_data)]
+    callbacks=[aim_callback, scanner.Scanner(output_fmt=write_data)]
 )
+
+scanner.modelhook(vars().items())
 
 trainer.train()
