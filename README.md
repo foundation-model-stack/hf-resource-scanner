@@ -10,6 +10,8 @@ Measures and reports GPU memory consumption broken up into 4 categories:
 3. Gradients
 4. Activations
 
+In addition, it also auto-detects various configurational settings operational during the training phase. 
+
 ## Install
 
 ```
@@ -20,15 +22,22 @@ pip install .
 
 2 line change to your existing code:
 
-1. Import the Scanner.
+1. Import the scanner.
 ```
-from HFResourceScanner import Scanner
+from HFResourceScanner import scanner
 ```
 
 2. Create and add a Scanner object to the list of callbacks:
 ```
 ...
-callbacks.append(Scanner())
+callbacks.append(scanner.Scanner())
+...
+```
+
+3. Call the function from scanner to attach hooks to the objects in the script
+```
+...
+scanner.modelhook(vars().items())
 ...
 ```
 
@@ -40,7 +49,7 @@ You can further configure the Scanner to:
 1. Choose the step to instrument and scan at (we only scan at a single step). There is no reason to change from the default of 5.
 2. Output to stdout (the default), file or use a callback function to deal with the output. See examples provided in the `examples/` folder.
 
-## Methodology
+## Methodology for memory profiler
 
 Uses a combination of the following items:
 
@@ -53,6 +62,15 @@ It is important to note that this scanning happens for a single step:
 1. At step start, setup hook functions.
 2. During the step, run the functions to take single point measurements.
 3. At the end of the step, correlate the data and cleaup the hook functions.
+
+## Methodology for configuration detector
+
+We leverage the strategic advantage offered by PyTorch Hooks.
+By identifying important modules, objects and tensors to attach these hooks, we gain access to the hidden activations which can provide valuable insights about the training framework.
+We aim to extract the following configurations:
+1. The model ( dtype, attention implementation, number of parameters, etc. )
+2. The training loop (Sequence length, Batch Size, Gradient accumulation steps, optimizer related configs, Mixed precision training, etc)
+3. The distributed frameworks used. (FSDP/DeepSpeed, Num of processes, Configs specific to the particular framework)
 
 ## Alternatives
 
