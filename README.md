@@ -57,3 +57,7 @@ It is important to note that this scanning happens for a single step:
 ## Alternatives
 
 1. Pytorch Profile: can give a complete breakup of stack traces and [memory consumption](https://pytorch.org/blog/understanding-gpu-memory-1/). While this is much more exhaustive and useful for optimizing implementations, this may be overwhelming for casual users. Also, this approach can take non-trivial amount of time to compute memory allocations and is quite slow for larger models.
+
+## License
+
+Apache 2.0
