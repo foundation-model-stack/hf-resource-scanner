@@ -4,6 +4,8 @@ from trl import SFTTrainer
 
 from HFResourceScanner import scanner
 
+scan = scanner.Scanner(output_fmt="output.json") 
+
 def write_data(data, metadata):
     print("Using Callback mechanism of Scanner: ", data, metadata)
 
@@ -17,9 +19,9 @@ trainer = SFTTrainer(
     dataset_text_field="text",
     max_seq_length=512,
     args=TrainingArguments(output_dir="tmp_trainer", max_steps=5),
-    callbacks=[scanner.Scanner(output_fmt=write_data)]
+    callbacks=[scan]
 )
 
-scanner.modelhook(vars().items())
+scan.attach_hook(vars().items()) #config detection
 
 trainer.train()

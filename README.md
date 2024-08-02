@@ -24,21 +24,21 @@ pip install .
 
 1. Import the scanner.
 ```
-from HFResourceScanner import scanner
+from HFResourceScanner import Scanner
 ```
-(import scanner module instead of the class Scanner)
+
 
 2. Create and add a Scanner object to the list of callbacks:
 ```
 ...
-callbacks.append(scanner.Scanner())
+callbacks.append(Scanner())
 ...
 ```
 
-3. Call the function from scanner to attach hooks to the objects in the script. This line is supposed to be added just before the training begins. (after trainer object is defined)
+3. Call the function from Scanner object to attach hooks to the objects in the script. This line is supposed to be added just before the training begins. (after trainer object is defined)
 ```
 ...
-scanner.modelhook(vars().items())
+Scanner.attach_hook(vars().items())
 ...
 ```
 (vars.items() passes all the objects as an argument from the trainer script to the scanner)

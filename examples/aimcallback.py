@@ -5,6 +5,8 @@ from trl import SFTTrainer
 from aim.hugging_face import AimCallback
 from HFResourceScanner import scanner
 
+scan = scanner.Scanner(output_fmt="output.json") 
+
 aim_callback = AimCallback(repo="/data/aim", experiment="cg-reg-extra")
 def write_data(data, metadata):
     aim_callback.experiment["hf_resource_scanner_data"] = data
@@ -19,9 +21,9 @@ trainer = SFTTrainer(
     dataset_text_field="text",
     max_seq_length=512,
     args=TrainingArguments(output_dir="tmp_trainer", max_steps=5),
-    callbacks=[aim_callback, scanner.Scanner(output_fmt=write_data)]
+    callbacks=[aim_callback, scan]
 )
 
-scanner.modelhook(vars().items())
+scan.attach_hook(vars().items()) #config detection
 
 trainer.train()

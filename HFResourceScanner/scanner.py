@@ -14,7 +14,7 @@ import time
 import torch.nn as nn
 from transformers import PreTrainedModel 
 
-TARGET_STEP = 5
+TARGET_STEP = 4
 
 class Scanner(TrainerCallback):
     """Scan category-wise resource consumption during training.
@@ -58,6 +58,13 @@ class Scanner(TrainerCallback):
 
         self.target_step = target_step
         self.output_fmt = output_fmt
+
+        ## CONFIGS ##
+        self.step=0 
+        self.model_handle=None
+        self.configs_dict={}
+
+        
 
     def on_step_begin(self, args, state, control, model, tokenizer, optimizer, **kwargs):
         # only calculate for master process in fsdp, other GPUs will be symmetrical
@@ -276,56 +283,58 @@ class Scanner(TrainerCallback):
 
 
 
-
-
-
-
-
-"""CONFIGURATION DETECTOR"""
-
-# class Config_Detector(): 
-
-#     def __init__(self):
-#         self.model_handle=None
-#         self.step=0
-
-""""
-Doesnt work if done using a class because: when called in the trainer script an instnce of this class is created and that disrupts attaching hooks.
-(Hooks not attached to the original objects in the trainer script. Instead it is probably attached to the instance of the objects created.)
-"""
-
-global model_handle, step
-model_handle=None
-step=0
-
-def modelhook(objs_dict):
-    global model_handle
-
-    model=None
-
-    for _, obj in objs_dict:
-        if isinstance(obj,PreTrainedModel):
-            model=obj
-
-        elif isinstance(obj, nn.Module) and len([x for x in obj.children()])!=0: 
-            model=obj
-
-        elif isinstance(obj, type) and issubclass(obj, nn.Module):
-            model=obj
-
-
-    if model==None:
-        print("No Model Object Found")
-        return
     
-    model.register_forward_hook(fwd_steps_hook_func) 
+    """
+    CONFIGURATION DETECTION USING PYTORCH HOOKS
+    """
 
-    model_handle=model.register_forward_hook(model_hook_func)
+
+    def attach_hook(self,objs_dict):
+        model=None
+
+        for _, obj in objs_dict:
+            if isinstance(obj,PreTrainedModel):
+                model=obj
+
+            elif isinstance(obj, nn.Module) and len([x for x in obj.children()])!=0: 
+                model=obj
+
+            elif isinstance(obj, type) and issubclass(obj, nn.Module):
+                model=obj
 
 
-def fwd_steps_hook_func(module,input,output):
-    global step
-    step=step+1
+        if model==None:
+            print("No Model Object Found")
+            return
+        
+        model.register_forward_hook(self.fwd_steps_hook_func) 
+
+        self.model_handle=model.register_forward_hook(self.model_hook_func)
+
+
+        
+
+    def fwd_steps_hook_func(self,module,input,output): #to keep track of number of forward pass steps
+        
+        self.step=self.step+1
+
+    def model_hook_func(self,module, input,output):
+        if self.step == self.target_step: #executed only in target step
+        
+            total_params = sum(p.numel() for p in module.parameters() if p.requires_grad)
+            params_dtype=next(module.parameters()).dtype
+            self.configs_dict["n_params"] = total_params
+            self.configs_dict["Dtype"] = params_dtype
+        
+        if self.step == self.target_step + 1: #print results in target_step + 1
+            self.print_configs()
+            self.model_handle.remove()
+
+
+    def print_configs(self):
+        print(self.configs_dict)
+
+
 
 def model_hook_func(module, input,output):
     if step == 3:
