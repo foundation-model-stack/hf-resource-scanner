@@ -64,7 +64,9 @@ class Scanner(TrainerCallback):
         # note that global_step is number of steps completed, so we need the -1
         if state.global_step != self.target_step - 1:
             return
-        # run only for the target step
+        
+        # the following lines of code run
+        # only for the target step on rank 0
 
         torch.cuda.synchronize()
         self.data["step_begin"] = time.time_ns()
@@ -117,7 +119,40 @@ class Scanner(TrainerCallback):
     
         self.opt_step_begin_hook_handle = optimizer.register_step_pre_hook(opt_step_begin)
         self.opt_step_end_hook_handle = optimizer.register_step_post_hook(opt_step_end)
+
+        ##############
+        # NOTE: This is not ideal, but is it factually correct as a hack?
+        # Although this is working, this is not a good way to use hooks
+        # ideal case should have been:
+        # model.register_full_backward_pre_hook(bwd_begin)
+        # model.register_full_backward_hook(bwd_end)
+        # BUT, the above code is not working, because the hooks never fire
+        # because the model, although inheriting from nn.Module, the register_hook functions
+        # give a warning, that it needs a tensor, not a huggingface model.
+        # The next best thing couldve been to use the register a hook to every trainanble paramater,
+        # but then there are too many hooks fired for one backpropagation step.
+        # The current solution is to use the `lm_head` as the last learnable parameter, and register a hook to it.
+        # and named_paramaters() to get the first learnable parameter, and then "register_hook()"
+        # register_hook() is not ideal, because it is not a full_backward_hook to an nn.Module, but a hook to a single parameter.
+        # but apparently, this is the only way to get a hook to a torch.nn.Parameter
+        # and this hook fires on gradient calculation, which is what we need.
+        # documentation on this weirdness is here: https://pytorch.org/docs/stable/generated/torch.Tensor.register_hook.html
+        # https://pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module.register_full_backward_hook
+        ########
+
+        ### NOTE: The following are the different ways I tried to register hooks, and the results:
+        # self.bwd_end_hook_handle = model.register_backward_hook(bwd_end) # FIRES before the full_backward_pre_hook # register_backward_hook is  deprecated in favor of register_full_backward_hook
+        # self.bwd_end_hook_handle = model.lm_head.register_backward_hook(bwd_end) # time difference bw this and the backprop start is 4e-5 sec
+        # self.bwd_end_hook_handle = first_learnable_param.register_backward_hook(bwd_end) # Throws error because first_learnable_param is not a torch.nn.Parameter, but this needs a tensor [???]
         
+        # self.bwd_end_hook_handle = model.register_hook(bwd_end) # Error, because model has no attribute `register_hook`
+        # self.bwd_end_hook_handle = model.lm_head.register_hook(bwd_end) # Error: Linear has no attribute `register_hook`
+        
+        # self.bwd_end_hook_handle = model.register_full_backward_hook(bwd_end) # DOESNT FIRE -> ideal, but doesnt fire
+        # self.bwd_end_hook_handle = model.lm_head.register_full_backward_hook(bwd_end) # time difference is 0.00019 sec
+        # self.bwd_end_hook_handle = first_learnable_param.register_full_backward_hook(bwd_end) # Throws error because first_learnable_param is a torch.nn.Parameter, but this needs a tensor [???]
+        ##############
+
         
     def on_step_end(self, args, state, control, model, tokenizer, optimizer, **kwargs):
         # only calculate for master process in fsdp, other GPUs will be symmetrical
