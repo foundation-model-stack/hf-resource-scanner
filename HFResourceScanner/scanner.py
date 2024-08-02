@@ -40,7 +40,8 @@ class Scanner(TrainerCallback):
           - Function which takes in 2 arguments:
               will call back the provided function with the data and metadata dict
         """
-        self.data = {}
+        self.mem_data = {}
+        self.time_data = {}
         self.metadata = {}
 
         if not isinstance(target_step, int):
@@ -69,7 +70,7 @@ class Scanner(TrainerCallback):
         # only for the target step on rank 0
 
         torch.cuda.synchronize()
-        self.data["step_begin"] = time.time_ns()
+        self.time_data["step_begin"] = time.time_ns()
 
         ## setup optimizer hook to calc grad
         # in case we use accelerate, the real optimizer is one step removed
@@ -78,32 +79,32 @@ class Scanner(TrainerCallback):
         
         # functions to be called when hooks fired
         def fwd_begin(module, *args, **kwargs):
-            self.data["fwd_begin"] = time.time_ns()
+            self.time_data["fwd_begin"] = time.time_ns()
         
         def bwd_begin(module, *args, **kwargs):   
-            self.data["bwd_begin"] = time.time_ns()
+            self.time_data["bwd_begin"] = time.time_ns()
 
         def opt_step_begin(module, *args, **kwargs):
-            self.data["opt_begin"] = time.time_ns()
+            self.time_data["opt_begin"] = time.time_ns()
             gradmem = 0
             for lay in optimizer.state.items():
                 ps = lay[0]
                 if ps.grad != None:
                     gradmem += ps.grad.nelement() * ps.grad.element_size()
-            self.data["gradients"] = gradmem
+            self.mem_data["gradients"] = gradmem
         
         def fwd_end(module, *args, **kwargs):
             torch.cuda.synchronize()
-            self.data["fwd_end"] = time.time_ns()
-            self.data["activation"] = torch.cuda.memory_allocated()
+            self.time_data["fwd_end"] = time.time_ns()
+            self.mem_data["activation"] = torch.cuda.memory_allocated()
             
         def bwd_end(module, *args, **kwargs):
             torch.cuda.synchronize() 
-            self.data["bwd_end"] = time.time_ns()    
+            self.time_data["bwd_end"] = time.time_ns()    
          
         def opt_step_end(module, *args, **kwargs):
             torch.cuda.synchronize()
-            self.data["opt_end"] = time.time_ns()
+            self.time_data["opt_end"] = time.time_ns()
 
         
         for name, param in model.named_parameters():
@@ -165,10 +166,10 @@ class Scanner(TrainerCallback):
         # the following lines of code run
         # only for the target step on rank 0
         torch.cuda.synchronize()
-        self.data["step_end"] = time.time_ns()
-        self.data["cudamem"] = torch.cuda.memory_allocated()
-        self.data["cuda_max_mem"] = torch.cuda.max_memory_allocated()
-        self.data["model"] = model.get_memory_footprint()
+        self.time_data["step_end"] = time.time_ns()
+        self.mem_data["cudamem"] = torch.cuda.memory_allocated()
+        self.mem_data["cuda_max_mem"] = torch.cuda.max_memory_allocated()
+        self.mem_data["model"] = model.get_memory_footprint()
 
         if isinstance(model, peft.PeftModel):
             self.metadata["peft_trainable_params"] = model.get_nb_trainable_parameters()
@@ -179,17 +180,17 @@ class Scanner(TrainerCallback):
             for v in lstate.values():
                 if isinstance(v, torch.Tensor):
                     optimizer_mem += v.nelement() * v.element_size()
-        self.data["optimizer"] = optimizer_mem
+        self.mem_data["optimizer"] = optimizer_mem
 
         # we cannot calculate gradients from here
         # it will happen in the optimizer step hook
         # update activation value to remove out the model params + optimizer
-        self.data["activation"] -= self.data["model"] + self.data["optimizer"]
+        self.mem_data["activation"] -= self.mem_data["model"] + self.mem_data["optimizer"]
 
         # optional clean up step in presenting data
         from .utils import fmt_size
-        for k, v in self.data.items():
-            self.data[k] = fmt_size(v)
+        for k, v in self.mem_data.items():
+            self.mem_data[k] = fmt_size(v)
         
         # deregister all hooks
         self.remove_all_hook_handles()
@@ -204,13 +205,16 @@ class Scanner(TrainerCallback):
         self.opt_step_end_hook_handle.remove()
 
     def write_plain(self, fout=sys.stdout):
-        print("ResourceScanner: ", self.data, file=fout)
+        print("ResourceScanner Data: ", self.mem_data, file=fout)
+        print("Time Data: ", self.time_data, file=fout)
         if self.metadata:
-            print("ResourceScanner metadata: ", self.metadata, file=fout)
+            print("Scanner metadata: ", self.metadata, file=fout)
 
     def write_json(self, fout=sys.stdout):
         import json
-        out = json.dumps({"data": self.data, "metadata": self.metadata})
+        out = json.dumps({"time_data": self.time_data,
+                          "mem_data": self.mem_data, 
+                          "metadata": self.metadata})
         print(out, file=fout)
 
     def handle_output(self):
@@ -246,7 +250,7 @@ class Scanner(TrainerCallback):
         if callable(self.output_fmt):
             try:
                 if len(getfullargspec(self.output_fmt).args) == 2:
-                    self.output_fmt(self.data, self.metadata)
+                    self.output_fmt(self.time_data, self.mem_data, self.metadata)
                     return
             except:
                 logger.error("Problem in inspecting callback function.")
