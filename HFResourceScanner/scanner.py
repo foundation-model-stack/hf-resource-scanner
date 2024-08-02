@@ -10,6 +10,8 @@ import sys
 import os
 from inspect import getfullargspec
 
+import time
+
 TARGET_STEP = 5
 
 class Scanner(TrainerCallback):
@@ -62,31 +64,61 @@ class Scanner(TrainerCallback):
         # note that global_step is number of steps completed, so we need the -1
         if state.global_step != self.target_step - 1:
             return
-
         # run only for the target step
 
-        ## setup optimizer hook to calc grad
+        torch.cuda.synchronize()
+        self.data["step_begin"] = time.time_ns()
 
+        ## setup optimizer hook to calc grad
         # in case we use accelerate, the real optimizer is one step removed
         if isinstance(optimizer, accelerate.optimizer.AcceleratedOptimizer):
             optimizer = optimizer.optimizer
+        
+        # functions to be called when hooks fired
+        def fwd_begin(module, *args, **kwargs):
+            self.data["fwd_begin"] = time.time_ns()
+        
+        def bwd_begin(module, *args, **kwargs):   
+            self.data["bwd_begin"] = time.time_ns()
 
-        def optim_track_gradmem(optimizer, *args, **kwargs):
+        def opt_step_begin(module, *args, **kwargs):
+            self.data["opt_begin"] = time.time_ns()
             gradmem = 0
             for lay in optimizer.state.items():
                 ps = lay[0]
                 if ps.grad != None:
                     gradmem += ps.grad.nelement() * ps.grad.element_size()
             self.data["gradients"] = gradmem
-
-        self.optim_hook_handle = optimizer.register_step_pre_hook(optim_track_gradmem)
-
-        ## setup model fwd hook to calc activations
-        def model_track_activations(model, args, output):
+        
+        def fwd_end(module, *args, **kwargs):
+            torch.cuda.synchronize()
+            self.data["fwd_end"] = time.time_ns()
             self.data["activation"] = torch.cuda.memory_allocated()
+            
+        def bwd_end(module, *args, **kwargs):
+            torch.cuda.synchronize() 
+            self.data["bwd_end"] = time.time_ns()    
+         
+        def opt_step_end(module, *args, **kwargs):
+            torch.cuda.synchronize()
+            self.data["opt_end"] = time.time_ns()
 
-        self.model_fwd_hook_handle = model.register_forward_hook(model_track_activations)
-
+        
+        for name, param in model.named_parameters():
+            first_learnable_param = param
+            break        
+        
+        # registering all hooks
+        self.fwd_begin_hook_handle = model.register_forward_pre_hook(fwd_begin)
+        self.fwd_end_hook_handle = model.register_forward_hook(fwd_end)
+        
+        self.bwd_begin_hook_handle = model.lm_head.register_full_backward_pre_hook(bwd_begin)
+        self.bwd_end_hook_handle = first_learnable_param.register_hook(bwd_end)
+    
+        self.opt_step_begin_hook_handle = optimizer.register_step_pre_hook(opt_step_begin)
+        self.opt_step_end_hook_handle = optimizer.register_step_post_hook(opt_step_end)
+        
+        
     def on_step_end(self, args, state, control, model, tokenizer, optimizer, **kwargs):
         # only calculate for master process in fsdp, other GPUs will be symmetrical
         if state and not state.is_world_process_zero:
