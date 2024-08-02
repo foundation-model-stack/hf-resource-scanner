@@ -162,8 +162,10 @@ class Scanner(TrainerCallback):
         if state.global_step != self.target_step:
             return
 
-        # run only for the target step
-
+        # the following lines of code run
+        # only for the target step on rank 0
+        torch.cuda.synchronize()
+        self.data["step_end"] = time.time_ns()
         self.data["cudamem"] = torch.cuda.memory_allocated()
         self.data["cuda_max_mem"] = torch.cuda.max_memory_allocated()
         self.data["model"] = model.get_memory_footprint()
@@ -181,10 +183,6 @@ class Scanner(TrainerCallback):
 
         # we cannot calculate gradients from here
         # it will happen in the optimizer step hook
-        # now, deregister that hook
-        self.optim_hook_handle.remove()
-        # similary for activations
-        self.model_fwd_hook_handle.remove()
         # update activation value to remove out the model params + optimizer
         self.data["activation"] -= self.data["model"] + self.data["optimizer"]
 
@@ -192,8 +190,18 @@ class Scanner(TrainerCallback):
         from .utils import fmt_size
         for k, v in self.data.items():
             self.data[k] = fmt_size(v)
-
+        
+        # deregister all hooks
+        self.remove_all_hook_handles()
         self.handle_output()
+
+    def remove_all_hook_handles(self):
+        self.fwd_begin_hook_handle.remove()
+        self.fwd_end_hook_handle.remove()
+        self.bwd_begin_hook_handle.remove()
+        self.bwd_end_hook_handle.remove()
+        self.opt_step_begin_hook_handle.remove()
+        self.opt_step_end_hook_handle.remove()
 
     def write_plain(self, fout=sys.stdout):
         print("ResourceScanner: ", self.data, file=fout)
