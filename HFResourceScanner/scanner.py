@@ -168,7 +168,8 @@ class Scanner(TrainerCallback):
 
         # the following lines of code run
         # only for the target step on rank 0
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         self.time_data["step_end"] = time.time_ns()
         self.mem_data["cudamem"] = torch.cuda.memory_allocated()
         self.mem_data["cuda_max_mem"] = torch.cuda.max_memory_allocated()
