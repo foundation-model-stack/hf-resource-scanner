@@ -68,8 +68,8 @@ class Scanner(TrainerCallback):
         
         # the following lines of code run
         # only for the target step on rank 0
-
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         self.time_data["step_begin"] = time.time_ns()
 
         ## setup optimizer hook to calc grad
@@ -94,16 +94,19 @@ class Scanner(TrainerCallback):
             self.mem_data["gradients"] = gradmem
         
         def fwd_end(module, *args, **kwargs):
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
             self.time_data["fwd_end"] = time.time_ns()
             self.mem_data["activation"] = torch.cuda.memory_allocated()
             
         def bwd_end(module, *args, **kwargs):
-            torch.cuda.synchronize() 
+            if torch.cuda.is_available():
+                torch.cuda.synchronize() 
             self.time_data["bwd_end"] = time.time_ns()    
          
         def opt_step_end(module, *args, **kwargs):
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
             self.time_data["opt_end"] = time.time_ns()
 
         
