@@ -70,7 +70,7 @@ class Scanner(TrainerCallback):
         # only for the target step on rank 0
         if torch.cuda.is_available():
             torch.cuda.synchronize()
-        self.time_data["step_begin"] = time.time_ns()
+        self.time_data["step_begin_absolute"] = time.time_ns()
 
         ## setup optimizer hook to calc grad
         # in case we use accelerate, the real optimizer is one step removed
@@ -79,13 +79,16 @@ class Scanner(TrainerCallback):
         
         # functions to be called when hooks fired
         def fwd_begin(module, *args, **kwargs):
-            self.time_data["fwd_begin"] = time.time_ns()
+            self.time_data["fwd_begin_absolute"] = time.time_ns()
+            self.time_data["fwd_begin_relative"] = self.time_data["fwd_begin_absolute"] - self.time_data["step_begin_absolute"]
         
         def bwd_begin(module, *args, **kwargs):   
-            self.time_data["bwd_begin"] = time.time_ns()
+            self.time_data["bwd_begin_absolute"] = time.time_ns()
+            self.time_data["bwd_begin_relative"] = self.time_data["bwd_begin_absolute"] - self.time_data["step_begin_absolute"]
 
         def opt_step_begin(module, *args, **kwargs):
-            self.time_data["opt_begin"] = time.time_ns()
+            self.time_data["opt_begin_absolute"] = time.time_ns()
+            self.time_data["opt_begin_relative"] = self.time_data["opt_begin_absolute"] - self.time_data["step_begin_absolute"]
             gradmem = 0
             for lay in optimizer.state.items():
                 ps = lay[0]
@@ -96,18 +99,21 @@ class Scanner(TrainerCallback):
         def fwd_end(module, *args, **kwargs):
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-            self.time_data["fwd_end"] = time.time_ns()
+            self.time_data["fwd_end_absolute"] = time.time_ns()
+            self.time_data["fwd_end_relative"] = self.time_data["fwd_end_absolute"] - self.time_data["step_begin_absolute"]
             self.mem_data["activation"] = torch.cuda.memory_allocated()
             
         def bwd_end(module, *args, **kwargs):
             if torch.cuda.is_available():
                 torch.cuda.synchronize() 
-            self.time_data["bwd_end"] = time.time_ns()    
+            self.time_data["bwd_end_absolute"] = time.time_ns()
+            self.time_data["bwd_end_relative"] = self.time_data["bwd_end_absolute"] - self.time_data["step_begin_absolute"]    
          
         def opt_step_end(module, *args, **kwargs):
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-            self.time_data["opt_end"] = time.time_ns()
+            self.time_data["opt_end_absolute"] = time.time_ns()
+            self.time_data["opt_end_relative"] = self.time_data["opt_end_absolute"] - self.time_data["step_begin_absolute"]
 
         
         for name, param in model.named_parameters():
@@ -170,7 +176,8 @@ class Scanner(TrainerCallback):
         # only for the target step on rank 0
         if torch.cuda.is_available():
             torch.cuda.synchronize()
-        self.time_data["step_end"] = time.time_ns()
+        self.time_data["step_end_absolute"] = time.time_ns()
+        self.time_data["step_end_relative"] = self.time_data["step_end_absolute"] - self.time_data["step_begin_absolute"]
         self.mem_data["cudamem"] = torch.cuda.memory_allocated()
         self.mem_data["cuda_max_mem"] = torch.cuda.max_memory_allocated()
         self.mem_data["model"] = model.get_memory_footprint()
