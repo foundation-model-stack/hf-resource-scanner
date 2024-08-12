@@ -13,6 +13,8 @@ from inspect import getfullargspec
 import time
 import torch.nn as nn
 from transformers import PreTrainedModel 
+import transformers
+import deepspeed
 
 TARGET_STEP = 4
 
@@ -61,9 +63,16 @@ class Scanner(TrainerCallback):
 
         ## CONFIGS ##
         self.step=0 
-        self.model_handle=None
+        self.num_fwd_pass=0
+        self.grad_accum_steps=0
+        self.model_handle = self.layer_handle = self.bwd_step_handle = self.grad_accum_handle = self.amp_handle = self.print_handle = None
         self.configs_dict={}
-
+        self.trainer=None
+        self.is_hf_model=False
+        self.grad_accum_hook_attached=False
+        self.dtypes_for_amp=[]
+        self.grad_checkpointing_checked=False
+        self.opt_hook_fired = False
         
 
     def on_step_begin(self, args, state, control, model, tokenizer, optimizer, **kwargs):
@@ -289,50 +298,310 @@ class Scanner(TrainerCallback):
     """
 
 
-    def attach_hook(self,objs_dict):
+    def attach_hooks(self,objs_dict):
+
+        if torch.cuda.current_device() != 0:
+            return  
+        
         model=None
 
-        for _, obj in objs_dict:
-            if isinstance(obj,PreTrainedModel):
-                model=obj
-
-            elif isinstance(obj, nn.Module) and len([x for x in obj.children()])!=0: 
-                model=obj
-
-            elif isinstance(obj, type) and issubclass(obj, nn.Module):
-                model=obj
-
+        # DETECTING OBJECTS
+        for name, obj in objs_dict:
+            if isinstance(obj, transformers.trainer.Trainer):
+                self.trainer=obj
+                model= self.trainer.model_wrapped
+                break # for hf trainers, we detect all objects from the trainer object      
 
         if model==None:
             print("No Model Object Found")
             return
-        
-        model.register_forward_hook(self.fwd_steps_hook_func) 
 
+        initial_params_dtype= next(model.parameters()).dtype #Model dtype is checked outside the hook because, once prepared by the trainer, it takes the dtype of the mixed precision
+        
+        print(f'\nLoaded Model parameters dtype: {initial_params_dtype}')
+        self.configs_dict['Model loaded in dtype'] = initial_params_dtype
+        
+
+        # Getting the first layer from the innermost submodule
+        first_layer = next(model.children())
+        has_children = True
+        while has_children == True:
+            has_children = False
+            first_layer=next(first_layer.children())
+            for child in first_layer.children():
+                has_children = True
+        
+        
+
+        """ATTACHING HOOKS"""
+
+        # Forward hook for BS and SeqLen
+        self.layer_handle = first_layer.register_forward_hook(self.layer_hook_func)
+
+
+        #STEPS
+        self.fwd_step_handle=model.register_forward_hook(self.fwd_steps_hook_func)
+        """
+        For huggingFace trainers, one global step is one gradient accumulation. So if grad_accum_steps=n, then one global step happens after n forward passes.
+        """
+       
+        # Forward Hook for AMP and Grad Checkpointing
+        for name, module in model.named_modules():
+            self.amp_handle=module.register_forward_hook(self.amp_grad_checkpoint_forward_hook) #mixed precision handle
+
+
+         # Forward hook for all the other params
         self.model_handle=model.register_forward_hook(self.model_hook_func)
 
 
-        
 
-    def fwd_steps_hook_func(self,module,input,output): #to keep track of number of forward pass steps
+
+    def fwd_steps_hook_func(self,module,input,output):
+        """
+        This function keeps track of steps for HF trainers.
+        In HF trainers, one global step is actually one gradient update. So if grad_accum_steps=n, then n forward passes make one global step.
+        """
+        if torch.cuda.current_device() != 0:
+            return
+       
+        if self.step == self.trainer.state.global_step:
+            self.num_fwd_pass=self.num_fwd_pass + 1
+
+        elif self.grad_accum_steps == 0 :
+            self.grad_accum_steps = self.num_fwd_pass
+            self.step = self.step + 1
+            self.num_fwd_pass=self.num_fwd_pass + 1
+        else:
+            self.step = self.step + 1
+            self.num_fwd_pass=self.num_fwd_pass + 1
+
+
+
+
+    def layer_hook_func(self,module, inp, out):
+        """
+        This function extracts the BS and seqlen from the input dimensions of first layer of the model
+        """
+        if torch.cuda.current_device() != 0:
+            return
         
-        self.step=self.step+1
+        if self.num_fwd_pass == self.target_step * self.grad_accum_steps : #check only during the examining step = global step (which is num_fwd_pass/grad_accum_steps).
+            """Above conditions: First condition checks if the script is using HF trainers and if so makes sure that the examining step matches the step in progress bar (which is num_fwd_pass / grad_accum_step)"""
+            
+            inp_shape=inp[0].shape             
+            
+                
+            bs=inp_shape[0]
+            seqlen=inp_shape[1]
+            print(f"\nBatch Size: {bs}")
+            print(f"\nSeq Length: {seqlen}")
+
+            self.configs_dict['Batch Size'] = bs
+            self.configs_dict['Sequence Length'] = seqlen
+
+            self.layer_handle.remove()
+
+
+
+
+
+    def optimizer_hook_func(self,opt,args,kwargs):
+        """
+        This function calculates the gradient accumulation for non-HF trainer scripts.
+        In custom training loops, gradient accumulation steps determine the number of forward passes in which one optimizer hook fires.
+        """
+        if torch.cuda.current_device() != 0:
+            return
+
+        
+        print(f"optimizer: {args}")
+        self.configs_dict['Optimizer Info'] = args
+        self.opt_hook_fired = True
+           
+        self.grad_accum_handle.remove()
+
+
+
+
+
+    def amp_grad_checkpoint_forward_hook(self,module, input, output):
+        """
+        This hook funtion helps check if AMP and gradient checkpointing is enabled.
+        Gradient Checkpointing: if gradient activation is enabled only some of the activations are saved during forward pass
+                                Hence only some of the outputs will have gradients. So we are checking if the outputs.requires_grad is false for any output. 
+        AMP: If AMP is enabled, the output activations are calculated in multple dtypes. (However, Deepspeed's execution doesnot seem to follow this and to be further studied.
+                                We have used a different logic for deepspeed which involves checking if the initial model loaded dtype matches the activaions dtype)
+        Note: only the dtypes of all layers of the model are checked in this function. AMP is actually checked using these dtypes in the model_hook_func().
+        """
+        
+        if torch.cuda.current_device() != 0:
+            return
+
+        if self.num_fwd_pass == self.target_step * self.grad_accum_steps : #check only during the examining step = global step (which is num_fwd_pass/grad_accum_steps).
+            
+            if not output[0].requires_grad and self.grad_checkpointing_checked==False: # if gradient activation is enabled only some of the activations are saved during forward pass. Hence only some of the outputs will have gradients. So we are checking if the outputs.requires_grad is false for any output. 
+                self.grad_checkpointing_checked = True
+
+            if str(output[0].dtype) not in self.dtypes_for_amp:
+                self.dtypes_for_amp.append(str(output[0].dtype))
+            
+            
+        if self.step==self.target_step+1:
+            self.amp_handle.remove()
+
+
+
 
     def model_hook_func(self,module, input,output):
-        if self.step == self.target_step: #executed only in target step
+
+        """
+        This Hook function does the following:
+        1) Extracts Model Configs: num params, attention mechanism
+        2) Attaches optimizer hooks.
+        3) Extracts FSDP/Deepspeed Configs
+        4) Checks for AMP with results from amp_grad_checkpoint_forward_hook
+        """
+    
+        if torch.cuda.current_device() != 0:
+            return
+
+        is_ds_enabled=False #deepspeed
+  
+        module = self.trainer.model_wrapped #the objects are wrapped with fsdp or deepspeed only after the training starts. so we initialize it again. If fsdp/Ds is not used, this is the same as normal model object
         
+        """   
+        optimizer hook attached within model hook function because, for default trainer optimizrs, the optimizer object is not defined until training starts and is accessible only from here.
+        optimizer hook is fired for every grad accum step unless there is gradient overflow.
+        """
+        if self.grad_accum_hook_attached==False: 
+                if isinstance(self.trainer.optimizer,accelerate.optimizer.AcceleratedOptimizer):
+                    
+                    if hasattr(self.trainer.optimizer.optimizer, 'optimizer'):
+                        self.grad_accum_handle=self.trainer.optimizer.optimizer.optimizer.register_step_pre_hook(self.optimizer_hook_func)
+                    else:
+                        self.grad_accum_handle=self.trainer.optimizer.optimizer.register_step_pre_hook(self.optimizer_hook_func)
+
+                else:
+                    self.grad_accum_handle=self.trainer.optimizer.register_step_pre_hook(self.optimizer_hook_func)
+                self.grad_accum_hook_attached=True #to ensure that grad accum hook function is called only once and it doesnt interrupt the remaining part of this function. If this condition is not included, we get an error about states modified during iteration.
+                
+                if self.grad_accum_steps == 0:
+                    "Make sure examining step is greater than grad accum steps."
+                    return
+                    
+
+        if self.num_fwd_pass == self.target_step * self.grad_accum_steps : #check only during the examining step = global step (which is num_fwd_pass/grad_accum_steps).
+            
             total_params = sum(p.numel() for p in module.parameters() if p.requires_grad)
-            params_dtype=next(module.parameters()).dtype
-            self.configs_dict["n_params"] = total_params
-            self.configs_dict["Dtype"] = params_dtype
-        
-        if self.step == self.target_step + 1: #print results in target_step + 1
-            self.print_configs()
+            print(f'\nModel has {total_params} parameters')
+            self.configs_dict['Total Num Params']= total_params
+                
+
+            print("Gradient Accumulation steps:", self.grad_accum_steps)
+            self.configs_dict['Gradient Accumulation steps'] = self.grad_accum_steps
+            if self.opt_hook_fired == False: # Since examining step is greater than grad_accum steps, the optimizer hook should fire atleast once. But if it doesn't, it likely indicates gradient overflow.
+                print("Warning: Optimizer hook was not fired. Could be due to Gradient Overflow.")
+
+
+
+            # ATTENTION IMPLEMENTATION CHECKING
+            attn_implementation = None
+            for _,sub_module in module.named_modules(): #works for all hugging face models
+                if "FlashAttention2" in type(sub_module).__name__ :
+                    attn_implementation= "Flash Attention 2"
+                    # print(type(sub_module).__name__)
+                if "SdpaAttention" in type(sub_module).__name__ :
+                    attn_implementation= "SDPA Attention"
+
+            print("Attention Implementation: ", attn_implementation)
+            self.configs_dict["Attention Implementation"]= attn_implementation
+
+
+
+
+
+            #FSDP CONFIGS
+            if isinstance(module, torch.distributed.fsdp.fully_sharded_data_parallel.FullyShardedDataParallel):
+                print("\nFSDP CONFIGS:")
+                print("\nNum processes: ", torch.cuda.device_count())
+                print("\nSharding strategy: ",module.sharding_strategy)
+                print("\nBackward prefetch: ",module.backward_prefetch)
+                print("\nForward prefetch: ",module.forward_prefetch)
+                print("\nMixed precision: ",module.mixed_precision.param_dtype)
+                print("\nUse_orig_params: ",module._use_orig_params)
+                self.configs_dict['Distributed Type'] = 'FSDP'
+                self.configs_dict['Num Processes'] = torch.cuda.device_count()
+                self.configs_dict['FSDP Configs']={'Sharding strategy':module.sharding_strategy , 
+                                                   'Backward prefetch':module.backward_prefetch , 
+                                                   'Forward prefetch': module.forward_prefetch,
+                                                   'Mixed precision': module.mixed_precision.param_dtype,
+                                                   'Use_orig_params': module._use_orig_params}
+
+            
+            #DEEPSPEED CONFIGS
+            if isinstance(module, deepspeed.runtime.engine.DeepSpeedEngine):
+                print("\nNum processes: ", torch.cuda.device_count())
+                print(module._config._param_dict)
+                is_ds_enabled=True
+                self.configs_dict['Distributed Type'] = 'DeepSpeed'
+                self.configs_dict['Num Processes'] = torch.cuda.device_count()
+                self.configs_dict['Deepspeed Configs'] = module._config._param_dict
+
+            
+
+
+            # AMP CHECKING          
+            amp = 'Not enabled'
+            if (len(self.dtypes_for_amp)>1) and (is_ds_enabled == False): #the second condition added bcz first condition doesnt detect AMP for deepspeed
+                print(f"Dtypes while training: {self.dtypes_for_amp}") #from amp hook. Printed here because if printed within the hook func, it is printed for each layers which we dont want.
+                if "torch.bfloat16" in self.dtypes_for_amp:
+                    amp='BF16'
+                    print(f"Automatic Mixed Precision Training enabled with BF16")
+                if "torch.float16" in self.dtypes_for_amp:
+                    amp='FP16'
+                    print(f"Automatic Mixed Precision Training enabled with FP16")
+
+
+            elif is_ds_enabled == True:             
+                if [str(self.configs_dict['Model loaded in dtype'])] != self.dtypes_for_amp:  #checking if the initial model loaded dtype matches the activaions dtype
+                    if "torch.bfloat16" in self.dtypes_for_amp:
+                        amp='BF16'
+                        print(f"Automatic Mixed Precision Training enabled with BF16")
+                    if "torch.float16" in self.dtypes_for_amp:
+                        amp='FP16'
+                        print(f"Automatic Mixed Precision Training enabled with FP16")
+
+
+            else:
+                print(f"Automatic Mixed Precision not enabled")
+
+            self.configs_dict['Automatic Mixed Precision'] = amp
+
+
+
+            #Gradient checkpointing checking
+
+            if self.grad_checkpointing_checked == False:
+                self.configs_dict['Gradient Checkpointing'] = 'Not Enabled'
+                print("Gradient checkpointing not enabled")
+            else:
+                self.configs_dict['Gradient Checkpointing'] = 'Enabled'
+                print("Gradient checkpointing enabled")
+
+
+            
+
+
+        if self.num_fwd_pass == self.target_step * self.grad_accum_steps + 1: #print results in target_step + 1
+            print(self.configs_dict)
             self.model_handle.remove()
 
 
-    def print_configs(self):
-        print(self.configs_dict)
+
+            
+            
+        
+        
 
 
 

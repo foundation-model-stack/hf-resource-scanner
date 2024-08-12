@@ -24,6 +24,6 @@ trainer = SFTTrainer(
     callbacks=[aim_callback, scan]
 )
 
-scan.attach_hook(vars().items()) #config detection
+scan.attach_hooks(vars().items()) #config detection
 
 trainer.train()
