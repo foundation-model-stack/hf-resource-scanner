@@ -393,8 +393,6 @@ class Scanner(TrainerCallback):
                 
             bs=inp_shape[0]
             seqlen=inp_shape[1]
-            # print(f"\nBatch Size: {bs}")
-            # print(f"\nSeq Length: {seqlen}")
 
             self.configs_dict['Batch Size'] = bs
             self.configs_dict['Sequence Length'] = seqlen
@@ -493,11 +491,9 @@ class Scanner(TrainerCallback):
         if self.num_fwd_pass == self.target_step * self.grad_accum_steps : #check only during the examining step = global step (which is num_fwd_pass/grad_accum_steps).
             
             total_params = sum(p.numel() for p in module.parameters() if p.requires_grad)
-            # print(f'\nModel has {total_params} parameters')
             self.configs_dict['Total Num Params']= total_params
                 
 
-            # print("Gradient Accumulation steps:", self.grad_accum_steps)
             self.configs_dict['Gradient Accumulation steps'] = self.grad_accum_steps
             if self.opt_hook_fired == False: # Since examining step is greater than grad_accum steps, the optimizer hook should fire atleast once. But if it doesn't, it likely indicates gradient overflow.
                 print("Warning: Optimizer hook was not fired. Could be due to Gradient Overflow.")
@@ -509,11 +505,10 @@ class Scanner(TrainerCallback):
             for _,sub_module in module.named_modules(): #works for all hugging face models
                 if "FlashAttention2" in type(sub_module).__name__ :
                     attn_implementation= "Flash Attention 2"
-                    # print(type(sub_module).__name__)
+
                 if "SdpaAttention" in type(sub_module).__name__ :
                     attn_implementation= "SDPA Attention"
 
-            # print("Attention Implementation: ", attn_implementation)
             self.configs_dict["Attention Implementation"]= attn_implementation
 
 
@@ -522,13 +517,6 @@ class Scanner(TrainerCallback):
 
             #FSDP CONFIGS
             if isinstance(module, torch.distributed.fsdp.fully_sharded_data_parallel.FullyShardedDataParallel):
-                # print("\nFSDP CONFIGS:")
-                # print("\nNum processes: ", torch.cuda.device_count())
-                # print("\nSharding strategy: ",module.sharding_strategy)
-                # print("\nBackward prefetch: ",module.backward_prefetch)
-                # print("\nForward prefetch: ",module.forward_prefetch)
-                # print("\nMixed precision: ",module.mixed_precision.param_dtype)
-                # print("\nUse_orig_params: ",module._use_orig_params)
                 self.configs_dict['Distributed Type'] = 'FSDP'
                 self.configs_dict['Num Processes'] = torch.cuda.device_count()
                 self.configs_dict['FSDP Configs']={'Sharding strategy':module.sharding_strategy , 
@@ -540,8 +528,6 @@ class Scanner(TrainerCallback):
             
             #DEEPSPEED CONFIGS
             if isinstance(module, deepspeed.runtime.engine.DeepSpeedEngine):
-                # print("\nNum processes: ", torch.cuda.device_count())
-                # print(module._config._param_dict)
                 is_ds_enabled=True
                 self.configs_dict['Distributed Type'] = 'DeepSpeed'
                 self.configs_dict['Num Processes'] = torch.cuda.device_count()
@@ -553,7 +539,6 @@ class Scanner(TrainerCallback):
             # AMP CHECKING          
             amp = 'Not enabled'
             if (len(self.dtypes_for_amp)>1) and (is_ds_enabled == False): #the second condition added bcz first condition doesnt detect AMP for deepspeed
-                # print(f"Dtypes while training: {self.dtypes_for_amp}") #from amp hook. Printed here because if printed within the hook func, it is printed for each layers which we dont want.
                 if "torch.bfloat16" in self.dtypes_for_amp:
                     amp='BF16'
                     
@@ -571,21 +556,19 @@ class Scanner(TrainerCallback):
                         
 
             self.configs_dict['Automatic Mixed Precision'] = amp
-            # print(f"Automatic Mixed Precision: ",amp)
 
 
 
             #Gradient checkpointing checking
-
             if self.grad_checkpointing_checked == False:
                 self.configs_dict['Gradient Checkpointing'] = 'Not Enabled'
-                # print("Gradient checkpointing not enabled")
+
             else:
                 self.configs_dict['Gradient Checkpointing'] = 'Enabled'
-                # print("Gradient checkpointing enabled")
 
-        
-        if self.num_fwd_pass == self.trainer.args.max_steps * self.grad_accum_steps : #print results during the first fwd_pass of the last step.
+
+        #print results during the first fwd_pass of the last step.
+        if self.num_fwd_pass == self.trainer.args.max_steps * self.grad_accum_steps : 
             self.print_results_func()
             self.model_handle.remove()
 

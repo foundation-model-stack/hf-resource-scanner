@@ -14,11 +14,11 @@ trainer = SFTTrainer(
     train_dataset=dataset,
     dataset_text_field="text",
     max_seq_length=512,
-    args=TrainingArguments(output_dir="tmp_trainer", max_steps=5),
+    args=TrainingArguments(output_dir="tmp_trainer", max_steps=5, fp16=True, gradient_checkpointing=True),
     callbacks=[scan]
 )
 
-scan.attach_hook(vars().items()) #config detection
+scan.attach_hooks(vars().items()) #config detection
 
 
 trainer.train()
