@@ -43,6 +43,7 @@ class Scanner(TrainerCallback):
         self.mem_data = {}
         self.time_data = {}
         self.metadata = {}
+        self.tps_data = {}
 
         if not isinstance(target_step, int):
             logger.warning("Non integer target_step requested: switching to default value instead!")
@@ -78,9 +79,10 @@ class Scanner(TrainerCallback):
             optimizer = optimizer.optimizer
         
         # functions to be called when hooks fired
-        def fwd_begin(module, *args, **kwargs):
+        def fwd_begin(module, args, kwargs):
             self.time_data["fwd_begin_absolute"] = time.time_ns()
             self.time_data["fwd_begin_relative"] = self.time_data["fwd_begin_absolute"] - self.time_data["step_begin_absolute"]
+            self.tps_data["tokens"] = kwargs["input_ids"].shape.numel()
         
         def bwd_begin(module, *args, **kwargs):   
             self.time_data["bwd_begin_absolute"] = time.time_ns()
@@ -121,7 +123,7 @@ class Scanner(TrainerCallback):
             break        
         
         # registering all hooks
-        self.fwd_begin_hook_handle = model.register_forward_pre_hook(fwd_begin)
+        self.fwd_begin_hook_handle = model.register_forward_pre_hook(fwd_begin, with_kwargs=True)
         self.fwd_end_hook_handle = model.register_forward_hook(fwd_end)
         
         self.bwd_begin_hook_handle = model.lm_head.register_full_backward_pre_hook(bwd_begin)
@@ -178,6 +180,9 @@ class Scanner(TrainerCallback):
             torch.cuda.synchronize()
         self.time_data["step_end_absolute"] = time.time_ns()
         self.time_data["step_end_relative"] = self.time_data["step_end_absolute"] - self.time_data["step_begin_absolute"]
+
+        self.tps_data["tps"] = self.tps_data["tokens"] / (self.time_data["step_end_relative"] / 1_000_000_000)
+
         self.mem_data["cudamem"] = torch.cuda.memory_allocated()
         self.mem_data["cuda_max_mem"] = torch.cuda.max_memory_allocated()
         self.mem_data["model"] = model.get_memory_footprint()
@@ -216,8 +221,9 @@ class Scanner(TrainerCallback):
         self.opt_step_end_hook_handle.remove()
 
     def write_plain(self, fout=sys.stdout):
-        print("ResourceScanner Data: ", self.mem_data, file=fout)
-        print("Time Data: ", self.time_data, file=fout)
+        print("ResourceScanner Memory Data: ", self.mem_data, file=fout)
+        print("ResourceScanner Time Data: ", self.time_data, file=fout)
+        print("ResourceScanner Tokens Data: ", self.tps_data, file=fout)
         if self.metadata:
             print("Scanner metadata: ", self.metadata, file=fout)
 
@@ -225,6 +231,7 @@ class Scanner(TrainerCallback):
         import json
         out = json.dumps({"time_data": self.time_data,
                           "mem_data": self.mem_data, 
+                          "tps_data": self.tps_data,
                           "metadata": self.metadata})
         print(out, file=fout)
 
