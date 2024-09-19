@@ -1,5 +1,6 @@
 import torch
 from transformers.trainer_callback import TrainerCallback
+from transformers.trainer import Trainer
 import accelerate
 import peft
 
@@ -13,6 +14,14 @@ from inspect import getfullargspec
 import time
 
 TARGET_STEP = 5
+
+def time_wrap(fun, scanner):
+    def temp(*args, **kwargs):
+        s = time.time()
+        result = fun(*args, **kwargs)
+        e = time.time()
+        scanner.register_function_time(fun, e - s)
+    return temp
 
 class Scanner(TrainerCallback):
     SCANNER_LOAD_TIME = -1
@@ -60,6 +69,13 @@ class Scanner(TrainerCallback):
         self.target_step = target_step
         self.output_fmt = output_fmt
 
+    def register_function_time(self, fun, duration):
+        name = fun.__name__
+
+        if name == "_save_checkpoint":
+            Trainer._save_checkpoint = fun
+            self.metadata["checkpoint"] = duration
+
     def on_step_begin(self, args, state, control, model, tokenizer, optimizer, **kwargs):
         # only calculate for master process in fsdp, other GPUs will be symmetrical
         if state and not state.is_world_process_zero:
@@ -70,6 +86,9 @@ class Scanner(TrainerCallback):
             # this gives us time from the library load to the start of the first step
             # which includes any model loading and data processing times
             self.time_data["pre_train"] = time.time() - self.SCANNER_LOAD_TIME
+
+            # setup time measurement of a single checkpoint operation
+            Trainer._save_checkpoint = time_wrap(Trainer._save_checkpoint, self)
 
         # note that global_step is number of steps completed, so we need the -1
         if state.global_step != self.target_step - 1:
