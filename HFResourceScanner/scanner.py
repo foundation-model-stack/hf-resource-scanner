@@ -15,6 +15,8 @@ import time
 TARGET_STEP = 5
 
 class Scanner(TrainerCallback):
+    SCANNER_LOAD_TIME = -1
+
     """Scan category-wise resource consumption during training.
 
     Attributes:
@@ -62,6 +64,12 @@ class Scanner(TrainerCallback):
         # only calculate for master process in fsdp, other GPUs will be symmetrical
         if state and not state.is_world_process_zero:
             return
+
+        if state.global_step == 0:
+            # the SCANNER_LOAD_TIME is setup in __init__
+            # this gives us time from the library load to the start of the first step
+            # which includes any model loading and data processing times
+            self.time_data["pre_train"] = time.time() - self.SCANNER_LOAD_TIME
 
         # note that global_step is number of steps completed, so we need the -1
         if state.global_step != self.target_step - 1:
