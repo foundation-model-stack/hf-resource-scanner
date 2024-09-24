@@ -1,4 +1,5 @@
 import torch
+import torch.distributed as dist
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer import Trainer
 import accelerate
@@ -55,6 +56,7 @@ class Scanner(TrainerCallback):
         self.time_data = {}
         self.metadata = {}
         self.tps_data = {}
+        self.net_data = {"calls": []}
 
         if not isinstance(target_step, int):
             logger.warning("Non integer target_step requested: switching to default value instead!")
@@ -76,6 +78,80 @@ class Scanner(TrainerCallback):
             Trainer._save_checkpoint = fun
             self.metadata["checkpoint"] = duration
 
+    def start_net_primitive_tracking(self):
+        # save the current functions
+
+        # Note: not all collectives listed here:
+        # https://pytorch.org/docs/stable/distributed.html
+        # are being tracked below
+        self.func_map = {"all_gather": dist.all_gather,
+                         "all_gather_into_tensor": dist.all_gather_into_tensor,
+                         "all_reduce": dist.all_reduce,
+                         "reduce_scatter_tensor": dist.reduce_scatter_tensor,
+                         }
+
+        # could really do with Lisp style macros right about now
+        # note that for each wrapping we are doing, there are 3 important things:
+        # 1. The name of the op - like "all_gather"
+        # 2. The object refering to the real function dist.all_gather
+        # 3. The i'th argument of interest: the input tensor.
+
+        # Refer to the docs: https://pytorch.org/docs/stable/distributed.html
+        # to know which arg is important for each type of call
+
+        def new_func(*args, **kwargs):
+            self.net_data["calls"].append(("all_gather", args[1].numel(), args[1].dtype))
+            func = self.func_map["all_gather"]
+            return func(*args, **kwargs)
+        dist.all_gather = new_func
+
+        def new_func(*args, **kwargs):
+            self.net_data["calls"].append(("all_gather_into_tensor", args[1].numel(), args[1].dtype))
+            func = self.func_map["all_gather_into_tensor"]
+            return func(*args, **kwargs)
+        dist.all_gather_into_tensor = new_func
+
+        def new_func(*args, **kwargs):
+            self.net_data["calls"].append(("all_reduce", args[0].numel(), args[0].dtype))
+            func = self.func_map["all_reduce"]
+            return func(*args, **kwargs)
+        dist.all_reduce = new_func
+
+        def new_func(*args, **kwargs):
+            self.net_data["calls"].append(("reduce_scatter_tensor", args[1].numel(), args[1].dtype))
+            func = self.func_map["reduce_scatter_tensor"]
+            return func(*args, **kwargs)
+        dist.reduce_scatter_tensor = new_func
+
+        # everytime a new primitive is being tracked here, need to also update
+        # the end tracking function below to restore the original
+
+        # IMPORTANT: if this is not done - entire training will get impacted!!!
+
+    def end_net_primitive_tracking(self):
+        dist.all_gather = self.func_map["all_gather"]
+        dist.all_gather_into_tensor = self.func_map["all_gather_into_tensor"]
+        dist.all_reduce = self.func_map["all_reduce"]
+        dist.reduce_scatter_tensor = self.func_map["reduce_scatter_tensor"]
+
+        # summarize the results and store it
+
+        # we only track counts of unique ops
+        call_sum = {}
+        for call in self.net_data["calls"]:
+            (cat, size, dtyp) = call
+            if cat not in call_sum:
+                call_sum[cat] = {}
+
+            if (dtyp, size) not in call_sum[cat]:
+                call_sum[cat][(dtyp, size)] = 0
+
+            call_sum[cat][(dtyp, size)] += 1
+
+        self.net_data["summary"] = call_sum
+        # we dump the full data here - which includes order of calls to save space
+        del self.net_data["calls"]
+
     def on_step_begin(self, args, state, control, model, tokenizer, optimizer, **kwargs):
         # only calculate for master process in fsdp, other GPUs will be symmetrical
         if state and not state.is_world_process_zero:
@@ -90,12 +166,18 @@ class Scanner(TrainerCallback):
             # setup time measurement of a single checkpoint operation
             Trainer._save_checkpoint = time_wrap(Trainer._save_checkpoint, self)
 
+            # wrap out the comm calls for this step
+            # It is important to not do this for the target step, since it will
+            # affect time calculations
+            self.start_net_primitive_tracking()
+
         # note that global_step is number of steps completed, so we need the -1
         if state.global_step != self.target_step - 1:
             return
         
         # the following lines of code run
         # only for the target step on rank 0
+
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         self.time_data["step_begin_absolute"] = time.time_ns()
@@ -198,11 +280,16 @@ class Scanner(TrainerCallback):
         if state and not state.is_world_process_zero:
             return
 
+        # operations at end of the zero'th step need to be called like this
+        if state.global_step == 1:
+            self.end_net_primitive_tracking()
+
         if state.global_step != self.target_step:
             return
 
         # the following lines of code run
         # only for the target step on rank 0
+
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         self.time_data["step_end_absolute"] = time.time_ns()
@@ -251,6 +338,7 @@ class Scanner(TrainerCallback):
         print("ResourceScanner Memory Data: ", self.mem_data, file=fout)
         print("ResourceScanner Time Data: ", self.time_data, file=fout)
         print("ResourceScanner Tokens Data: ", self.tps_data, file=fout)
+        print("ResourceScanner Net Data: ", self.net_data, file=fout)
         if self.metadata:
             print("Scanner metadata: ", self.metadata, file=fout)
 
@@ -259,7 +347,9 @@ class Scanner(TrainerCallback):
         out = json.dumps({"time_data": self.time_data,
                           "mem_data": self.mem_data, 
                           "tps_data": self.tps_data,
-                          "metadata": self.metadata})
+                          "net_data": self.net_data,
+                          "metadata": self.metadata,
+                          })
         print(out, file=fout)
 
     def handle_output(self):
