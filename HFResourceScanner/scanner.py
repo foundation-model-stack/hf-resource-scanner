@@ -228,8 +228,9 @@ class Scanner(TrainerCallback):
 
         
         for name, param in model.named_parameters():
-            first_learnable_param = param
-            break        
+            if param.requires_grad:
+                first_learnable_param = param
+                break
         
         # registering all hooks
         self.fwd_begin_hook_handle = model.register_forward_pre_hook(fwd_begin, with_kwargs=True)
