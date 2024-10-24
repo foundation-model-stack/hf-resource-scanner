@@ -1,17 +1,25 @@
 # HFResourceScanner
 
+![PyPI - Version](https://img.shields.io/pypi/v/HFResourceScanner)
+
 Scan resources consumed during training using HFTrainer and break up consumption by category with **almost ZERO** overheads.
 
 Works for all training approaches (such as full-fine tuning, Prompt Tuning, LORA) for HFTrainer and other trainers based on it, such as SFTTrainer. Limited support for FSDP (currently).
 
-Measures and reports GPU memory consumption broken up into 4 categories:
-1. Model paramters
-2. Optimizer
-3. Gradients
-4. Activations
+Measures and reports:
+1. GPU memory consumption broken up into 4 categories: paramters, Optimizer, Gradients and Activations.
+2. Time taken for a step broken up into 3 categories: forward, backward and optimizer update.
+3. Other time components: init time, checkpoint time etc
+4. Number and sizes of network primitive calls.
 
 ## Install
 
+From PyPi:
+```
+pip install HFResourceScanner
+```
+
+From source:
 ```
 pip install .
 ```

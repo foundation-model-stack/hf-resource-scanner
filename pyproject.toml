@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "HFResourceScanner"
 version = "0.1.0"
@@ -5,11 +9,12 @@ authors = [
   { name="Chander Govindarajan", email="mail@chandergovind.org" },
 ]
 description = "Scan resources used during training using HFTrainer"
+license = {text = "Apache-2.0"}
 readme = "README.md"
 requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
 ]
 dependencies = [
@@ -23,5 +28,5 @@ dependencies = [
 packages = ["HFResourceScanner"]
 
 [project.urls]
-Homepage = "https://github.com/pypa/sampleproject"
-Issues = "https://github.com/pypa/sampleproject/issues"
+Homepage = "https://github.com/foundation-model-stack/hf-resource-scanner"
+Issues = "https://github.com/foundation-model-stack/hf-resource-scanner/issues"
