@@ -152,7 +152,7 @@ class Scanner(TrainerCallback):
         # we dump the full data here - which includes order of calls to save space
         del self.net_data["calls"]
 
-    def on_step_begin(self, args, state, control, model, tokenizer, optimizer, **kwargs):
+    def on_step_begin(self, args, state, control, **kwargs):
         # only calculate for master process in fsdp, other GPUs will be symmetrical
         if state and not state.is_world_process_zero:
             return
@@ -177,6 +177,9 @@ class Scanner(TrainerCallback):
         
         # the following lines of code run
         # only for the target step on rank 0
+
+        model = kwargs["model"]
+        optimizer = kwargs["optimizer"]
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
@@ -276,7 +279,7 @@ class Scanner(TrainerCallback):
         ##############
 
         
-    def on_step_end(self, args, state, control, model, tokenizer, optimizer, **kwargs):
+    def on_step_end(self, args, state, control, **kwargs):
         # only calculate for master process in fsdp, other GPUs will be symmetrical
         if state and not state.is_world_process_zero:
             return
@@ -290,6 +293,9 @@ class Scanner(TrainerCallback):
 
         # the following lines of code run
         # only for the target step on rank 0
+
+        model = kwargs["model"]
+        optimizer = kwargs["optimizer"]
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
