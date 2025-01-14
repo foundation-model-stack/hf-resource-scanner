@@ -140,13 +140,21 @@ class Scanner(TrainerCallback):
         call_sum = {}
         for call in self.net_data["calls"]:
             (cat, size, dtyp) = call
+            # export to json fails without str repr here
+            dtyp = str(dtyp)
+
             if cat not in call_sum:
                 call_sum[cat] = {}
 
-            if (dtyp, size) not in call_sum[cat]:
-                call_sum[cat][(dtyp, size)] = 0
+            # save as nested dict
+            # needed to be able to export to json
+            if dtyp not in call_sum[cat]:
+                call_sum[cat][dtyp] = {}
 
-            call_sum[cat][(dtyp, size)] += 1
+            if size not in call_sum[cat][dtyp]:
+                call_sum[cat][dtyp][size] = 0
+
+            call_sum[cat][dtyp][size] += 1
 
         self.net_data["summary"] = call_sum
         # we dump the full data here - which includes order of calls to save space
@@ -380,8 +388,9 @@ class Scanner(TrainerCallback):
                     self.write_plain(fout)
 
                 fout.close()
-            except:
-                logger.error("Problem in writing to file")
+            except Exception as e:
+                import traceback
+                logger.error(f"Problem in writing to file: {traceback.format_exc()}")
                 logger.info("Switching to stdout instead.")
 
                 self.write_plain()
